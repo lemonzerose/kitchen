@@ -1,0 +1,512 @@
+<style>
+:root{
+  --counter:#221F1A;
+  --counter-2:#2E2A22;
+  --paper:#FAF8F1;
+  --paper-2:#F1ECDD;
+  --ink:#1C1A16;
+  --stamp:#B23A2E;
+  --stamp-dark:#8C2C22;
+  --highlight:#E8B93F;
+  --sage:#5B7A5B;
+  --line:#D8D2C4;
+  --muted:#9A9284;
+  --font-h:"PingFang TC","Heiti TC","Microsoft JhengHei",system-ui,sans-serif;
+  --font-b:"PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  --font-m:ui-monospace,"SF Mono",Consolas,"Cascadia Mono",monospace;
+}
+*{box-sizing:border-box;}
+.app{background:var(--counter);color:var(--paper);font-family:var(--font-b);border-radius:14px;padding:0;overflow:hidden;}
+.app button{font-family:var(--font-b);cursor:pointer;}
+.app input,.app textarea{font-family:var(--font-b);}
+.tab-btn{transition:background .15s;}
+.tab-btn.active{background:var(--highlight)!important;color:var(--ink)!important;}
+.dish-row:hover{background:var(--paper-2);}
+.zigzag{position:relative;}
+.zigzag::after{content:'';position:absolute;left:0;right:0;bottom:-9px;height:9px;
+  background:
+    linear-gradient(135deg, var(--counter) 6px, transparent 0) 0 0,
+    linear-gradient(-135deg, var(--counter) 6px, transparent 0) 0 0;
+  background-size:12px 12px;background-repeat:repeat-x;}
+</style>
+<div class="app" id="app"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/2.44.0/iconfont/tabler-icons.min.css"></script>
+<script>
+(function(){
+  var STORAGE_KEY = 'kitchen-order-config';
+
+  var state = {
+    sheetId: '',
+    tabs: [],
+    data: {},
+    activeCategory: null,
+    selected: {},
+    view: 'order',
+    haveText: '',
+    loading: false,
+    error: '',
+    configLoaded: false,
+    toast: ''
+  };
+
+  function esc(s){
+    return String(s==null?'':s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function parseCSV(text){
+    var rows = [], row = [], field = '', inQ = false;
+    for (var i=0;i<text.length;i++){
+      var c = text[i];
+      if (inQ){
+        if (c === '"'){
+          if (text[i+1] === '"'){ field += '"'; i++; } else { inQ = false; }
+        } else field += c;
+      } else {
+        if (c === '"') inQ = true;
+        else if (c === ',') { row.push(field); field=''; }
+        else if (c === '\n') { row.push(field); rows.push(row); row=[]; field=''; }
+        else if (c === '\r') {}
+        else field += c;
+      }
+    }
+    if (field.length>0 || row.length>0){ row.push(field); rows.push(row); }
+    return rows.filter(function(r){ return r.some(function(f){ return f.trim() !== ''; }); });
+  }
+
+  function extractSheetId(input){
+    input = (input||'').trim();
+    var m = input.match(/\/d\/([a-zA-Z0-9-_]+)/);
+    if (m) return m[1];
+    return input;
+  }
+
+  function normalizeIngredient(s){
+    return String(s||'')
+      .replace(/[\(（].*?[\)）]/g,'')
+      .replace(/[\d.]+\s*(公克|公升|毫升|克|kg|g|ml|cc|顆|片|條|支|把|包|罐|大匙|小匙|湯匙|茶匙|杯|盒|塊|根|粒|尾|隻|少許|適量|瓣)?/g,'')
+      .replace(/\s+/g,'')
+      .trim();
+  }
+
+  function splitIngredients(cell){
+    return String(cell||'')
+      .split(/[、,，;\n]+/)
+      .map(function(s){ return s.trim(); })
+      .filter(function(s){ return s.length>0; });
+  }
+
+  async function loadConfig(){
+    try{
+      var r = await window.storage.get('config');
+      if (r && r.value){
+        var c = JSON.parse(r.value);
+        state.sheetId = c.sheetId || '';
+        state.tabs = c.tabs || [];
+      }
+    }catch(e){}
+    state.configLoaded = true;
+    render();
+    if (state.sheetId && state.tabs.length) fetchAll();
+  }
+
+  async function saveConfig(){
+    try{
+      await window.storage.set('config', JSON.stringify({sheetId: state.sheetId, tabs: state.tabs}));
+    }catch(e){}
+  }
+
+  async function fetchAll(){
+    if (!state.sheetId || !state.tabs.length){
+      state.error = '請先輸入試算表 ID 與分頁名稱';
+      render();
+      return;
+    }
+    state.loading = true;
+    state.error = '';
+    render();
+    var newData = {};
+    var failedTabs = [];
+    for (var i=0;i<state.tabs.length;i++){
+      var tab = state.tabs[i];
+      try{
+        var url = 'https://docs.google.com/spreadsheets/d/' + encodeURIComponent(state.sheetId) +
+          '/gviz/tq?tqx=out:csv&sheet=' + encodeURIComponent(tab);
+        var res = await fetch(url);
+        var text = await res.text();
+        if (!res.ok || text.trim().indexOf('<') === 0){
+          failedTabs.push(tab);
+          continue;
+        }
+        var rows = parseCSV(text);
+        if (rows.length < 1){ newData[tab] = []; continue; }
+        var header = rows[0].map(function(h){ return h.trim(); });
+        var idxName = header.findIndex(function(h){ return h.indexOf('菜名') > -1; });
+        var idxIng = header.findIndex(function(h){ return h.indexOf('食材') > -1; });
+        var idxStep = header.findIndex(function(h){ return h.indexOf('步驟') > -1; });
+        var idxLink = header.findIndex(function(h){ return h.indexOf('連結') > -1 || h.indexOf('食譜') > -1; });
+        if (idxName<0) idxName = 0;
+        if (idxIng<0) idxIng = 1;
+        if (idxStep<0) idxStep = 2;
+        if (idxLink<0) idxLink = 3;
+        var dishes = [];
+        for (var r=1;r<rows.length;r++){
+          var row = rows[r];
+          var name = (row[idxName]||'').trim();
+          if (!name) continue;
+          var ingRaw = row[idxIng]||'';
+          dishes.push({
+            id: tab + '::' + r,
+            category: tab,
+            name: name,
+            ingredientsRaw: ingRaw,
+            ingredients: splitIngredients(ingRaw),
+            steps: (row[idxStep]||'').trim(),
+            link: (row[idxLink]||'').trim()
+          });
+        }
+        newData[tab] = dishes;
+      }catch(e){
+        failedTabs.push(tab);
+      }
+    }
+    state.data = newData;
+    if (!state.activeCategory || !state.tabs.includes(state.activeCategory)){
+      state.activeCategory = state.tabs[0];
+    }
+    state.loading = false;
+    if (failedTabs.length){
+      state.error = '以下分頁讀取失敗，請確認名稱與共用權限：' + failedTabs.join('、');
+    } else {
+      state.error = '';
+    }
+    await saveConfig();
+    render();
+  }
+
+  function toggleSelect(id){
+    if (state.selected[id]) delete state.selected[id];
+    else state.selected[id] = true;
+    render();
+  }
+
+  function allDishes(){
+    var list = [];
+    state.tabs.forEach(function(t){
+      (state.data[t]||[]).forEach(function(d){ list.push(d); });
+    });
+    return list;
+  }
+
+  function selectedDishes(){
+    return allDishes().filter(function(d){ return state.selected[d.id]; });
+  }
+
+  function showModal(title, text, hint){
+    var overlay = document.createElement('div');
+    overlay.style.cssText = 'position:absolute;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:999;padding:16px;';
+    overlay.innerHTML =
+      '<div style="background:var(--paper);color:var(--ink);border-radius:10px;padding:16px;max-width:420px;width:100%;font-family:var(--font-b);">' +
+      '<div style="font-weight:800;font-size:15px;margin-bottom:8px;">' + esc(title) + '</div>' +
+      '<textarea id="copyTa" readonly style="width:100%;height:180px;font-family:var(--font-m);font-size:13px;padding:10px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);resize:none;"></textarea>' +
+      '<div style="font-size:12px;color:var(--muted);margin:8px 0 12px;">' + esc(hint||'長按文字即可複製，或點下方按鈕嘗試直接複製。') + '</div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+      '<button id="closeModalBtn" style="padding:8px 14px;border-radius:6px;border:1px solid var(--line);background:#fff;color:var(--ink);">關閉</button>' +
+      '<button id="tryCopyBtn" style="padding:8px 14px;border-radius:6px;border:none;background:var(--stamp);color:#fff;font-weight:700;">嘗試直接複製</button>' +
+      '</div></div>';
+    document.getElementById('app').style.position = 'relative';
+    document.getElementById('app').appendChild(overlay);
+    var ta = overlay.querySelector('#copyTa');
+    ta.value = text;
+    setTimeout(function(){ ta.focus(); ta.select(); }, 50);
+    overlay.querySelector('#closeModalBtn').onclick = function(){ overlay.remove(); };
+    overlay.querySelector('#tryCopyBtn').onclick = async function(){
+      try{
+        await navigator.clipboard.writeText(text);
+        overlay.querySelector('#tryCopyBtn').textContent = '已複製！';
+      }catch(e){
+        ta.focus(); ta.select();
+        try{ document.execCommand('copy'); overlay.querySelector('#tryCopyBtn').textContent = '已複製！'; }
+        catch(e2){ overlay.querySelector('#tryCopyBtn').textContent = '請手動長按複製'; }
+      }
+    };
+  }
+
+  function copyOrder(){
+    var dishes = selectedDishes();
+    if (!dishes.length){ showModal('尚未點餐', '目前還沒有選擇任何菜色喔！'); return; }
+    var d = new Date();
+    var dateStr = d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0');
+    var lines = ['今日點餐（' + dateStr + '）'];
+    dishes.forEach(function(dish, i){ lines.push((i+1) + '. ' + dish.name); });
+    lines.push('共 ' + dishes.length + ' 道');
+    showModal('點餐清單', lines.join('\n'));
+  }
+
+  function copyIngredients(){
+    var dishes = selectedDishes();
+    if (!dishes.length){ showModal('尚未點餐', '請先在「點餐」頁面選擇菜色，才能產生食材清單。'); return; }
+    var counts = {};
+    var order = [];
+    dishes.forEach(function(dish){
+      dish.ingredients.forEach(function(ing){
+        var key = ing.trim();
+        if (!key) return;
+        if (!(key in counts)){ counts[key]=0; order.push(key); }
+        counts[key]++;
+      });
+    });
+    var lines = order.map(function(k){ return '- ' + k + (counts[k]>1 ? '  ×' + counts[k] : ''); });
+    showModal('採買清單（可貼到記事本）', lines.join('\n'), '長按文字全選複製，貼到手機記事本 App 即可使用。');
+  }
+
+  function matchResults(){
+    var have = state.haveText.split(/[、,，;\n]+/).map(normalizeIngredient).filter(function(s){return s;});
+    if (!have.length) return [];
+    var results = allDishes().map(function(d){
+      var total = d.ingredients.length;
+      if (!total) return {dish:d, ratio:0, matched:0, total:0, missing:d.ingredients};
+      var matchedList = [];
+      var missing = [];
+      d.ingredients.forEach(function(ing){
+        var norm = normalizeIngredient(ing);
+        var hit = have.some(function(h){
+          return h && norm && (norm.indexOf(h)>-1 || h.indexOf(norm)>-1);
+        });
+        if (hit) matchedList.push(ing); else missing.push(ing);
+      });
+      return {dish:d, ratio: matchedList.length/total, matched: matchedList.length, total: total, missing: missing};
+    });
+    return results.filter(function(r){ return r.matched>0; }).sort(function(a,b){ return b.ratio-a.ratio || b.matched-a.matched; });
+  }
+
+  function setView(v){ state.view = v; render(); }
+
+  function render(){
+    var app = document.getElementById('app');
+    app.innerHTML = renderHeader() + renderBody();
+    bindEvents();
+  }
+
+  function renderHeader(){
+    var tabs = [
+      {id:'order', label:'點餐', icon:'ti-clipboard-list'},
+      {id:'ingredients', label:'採買清單', icon:'ti-shopping-cart'},
+      {id:'match', label:'食材比對', icon:'ti-search'},
+      {id:'settings', label:'設定', icon:'ti-settings'}
+    ];
+    var count = Object.keys(state.selected).length;
+    return '' +
+    '<div style="background:var(--counter-2);padding:16px 18px;border-bottom:1px solid #3a3529;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">' +
+        '<div style="font-family:var(--font-h);font-weight:800;font-size:19px;letter-spacing:-0.01em;color:var(--paper);display:flex;align-items:center;gap:8px;">' +
+          '<i class="ti ti-toolsKitchen2" aria-hidden="true"></i>廚房點餐機' +
+          (count>0 ? '<span style="background:var(--stamp);color:#fff;font-family:var(--font-m);font-size:12px;font-weight:700;border-radius:20px;padding:3px 10px;transform:rotate(-3deg);display:inline-block;">已選 ' + count + '</span>' : '') +
+        '</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+        tabs.map(function(t){
+          var active = state.view === t.id;
+          return '<button data-view="' + t.id + '" class="tab-btn" style="padding:7px 12px;border-radius:20px;border:1px solid ' + (active?'var(--highlight)':'#4a4436') + ';background:' + (active?'var(--highlight)':'transparent') + ';color:' + (active?'var(--ink)':'var(--paper)') + ';font-size:13px;font-weight:700;display:flex;align-items:center;gap:5px;">' +
+            '<i class="ti ' + t.icon + '" aria-hidden="true" style="font-size:15px;"></i>' + t.label + '</button>';
+        }).join('') +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderBody(){
+    if (!state.configLoaded){
+      return '<div style="padding:40px;text-align:center;color:var(--muted);">載入中…</div>';
+    }
+    if (state.view === 'settings') return renderSettings();
+    if (!state.sheetId || !state.tabs.length){
+      return '<div style="padding:32px 20px;text-align:center;">' +
+        '<i class="ti ti-tools" style="font-size:32px;color:var(--muted);"></i>' +
+        '<p style="color:var(--paper);margin:12px 0 4px;font-weight:700;">還沒有連上試算表</p>' +
+        '<p style="color:var(--muted);font-size:13px;margin:0 0 16px;">請先到「設定」輸入試算表資訊</p>' +
+        '<button data-view="settings" class="tab-btn" style="padding:9px 18px;border-radius:8px;border:none;background:var(--highlight);color:var(--ink);font-weight:700;">前往設定</button>' +
+      '</div>';
+    }
+    if (state.view === 'order') return renderOrder();
+    if (state.view === 'ingredients') return renderIngredients();
+    if (state.view === 'match') return renderMatch();
+    return '';
+  }
+
+  function renderSettings(){
+    return '<div style="padding:20px;">' +
+      '<div style="background:var(--paper);color:var(--ink);border-radius:10px;padding:16px 18px;">' +
+        '<p style="font-weight:800;margin:0 0 10px;font-size:15px;">連接 Google 試算表</p>' +
+        '<ol style="font-size:13px;color:#4a453c;padding-left:18px;line-height:1.9;margin:0 0 16px;">' +
+          '<li>開啟試算表 → 右上角「共用」→ 一般存取權改為「知道連結的任何人」（檢視者）</li>' +
+          '<li>把每個分頁命名清楚（例如：熱炒、湯品、主食），分頁名稱等一下要打進來</li>' +
+          '<li>每個分頁的欄位標題請包含「菜名」「食材」「步驟」「食譜連結」這幾個字，順序不拘</li>' +
+          '<li>貼上試算表網址或 ID，並輸入分頁名稱（用逗號分隔，需與分頁名稱完全一致）</li>' +
+        '</ol>' +
+        '<label style="font-size:12px;color:#6b6558;font-weight:700;">試算表網址或 ID</label>' +
+        '<input id="sheetIdInput" value="' + esc(state.sheetId) + '" placeholder="https://docs.google.com/spreadsheets/d/xxxx/edit" style="width:100%;padding:9px 10px;border-radius:6px;border:1px solid var(--line);margin:6px 0 14px;font-size:13px;">' +
+        '<label style="font-size:12px;color:#6b6558;font-weight:700;">分頁名稱（逗號分隔）</label>' +
+        '<input id="tabsInput" value="' + esc(state.tabs.join(', ')) + '" placeholder="熱炒, 湯品, 主食" style="width:100%;padding:9px 10px;border-radius:6px;border:1px solid var(--line);margin:6px 0 14px;font-size:13px;">' +
+        '<button id="loadBtn" style="padding:10px 18px;border-radius:8px;border:none;background:var(--stamp);color:#fff;font-weight:700;font-size:14px;display:flex;align-items:center;gap:6px;">' +
+          '<i class="ti ti-refresh" aria-hidden="true"></i>' + (state.loading ? '讀取中…' : '讀取試算表') + '</button>' +
+        (state.error ? '<p style="color:var(--stamp);font-size:12px;margin:12px 0 0;">' + esc(state.error) + '</p>' : '') +
+        (!state.error && !state.loading && Object.keys(state.data).length ? '<p style="color:var(--sage);font-size:12px;margin:12px 0 0;">已成功讀取 ' + allDishes().length + ' 道菜色</p>' : '') +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderOrder(){
+    var dishes = state.data[state.activeCategory] || [];
+    var selDishes = selectedDishes();
+    var html = '<div style="display:flex;gap:0;align-items:flex-start;">';
+    html += '<div style="flex:1;min-width:0;padding:14px 0 0 0;">';
+    html += '<div style="display:flex;gap:6px;overflow-x:auto;padding:0 16px 12px;">';
+    html += state.tabs.map(function(t){
+      var active = t === state.activeCategory;
+      return '<button data-cat="' + esc(t) + '" style="white-space:nowrap;padding:7px 14px;border-radius:8px;border:1px solid ' + (active?'var(--highlight)':'#4a4436') + ';background:' + (active?'var(--highlight)':'transparent') + ';color:' + (active?'var(--ink)':'var(--paper)') + ';font-weight:700;font-size:13px;">' + esc(t) + '</button>';
+    }).join('');
+    html += '</div>';
+    html += '<div style="background:var(--paper);color:var(--ink);border-radius:10px 10px 0 0;margin:0 16px;overflow:hidden;">';
+    if (!dishes.length){
+      html += '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px;">這個分頁目前沒有菜色資料</div>';
+    } else {
+      dishes.forEach(function(d, idx){
+        var checked = !!state.selected[d.id];
+        html += '<div class="dish-row" style="padding:12px 14px;border-bottom:1px solid var(--line);display:flex;gap:10px;">' +
+          '<input type="checkbox" data-toggle="' + d.id + '" ' + (checked?'checked':'') + ' style="margin-top:3px;width:18px;height:18px;accent-color:var(--stamp);flex-shrink:0;">' +
+          '<div style="flex:1;min-width:0;">' +
+            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+              '<span style="font-weight:800;font-size:14.5px;">' + esc(d.name) + '</span>' +
+              (d.link ? '<a href="' + esc(d.link) + '" target="_blank" rel="noopener" style="color:var(--sage);font-size:12px;display:inline-flex;align-items:center;gap:3px;text-decoration:none;"><i class="ti ti-external-link" aria-hidden="true"></i>食譜</a>' : '') +
+            '</div>' +
+            '<div style="font-size:12px;color:#6b6558;margin-top:3px;">' + esc(d.ingredients.join('、') || '（未填寫食材）') + '</div>' +
+            (d.steps ? '<details style="margin-top:6px;"><summary style="font-size:12px;color:var(--stamp);cursor:pointer;">步驟</summary><div style="font-size:12.5px;color:#4a453c;margin-top:6px;white-space:pre-wrap;line-height:1.7;">' + esc(d.steps) + '</div></details>' : '') +
+          '</div>' +
+        '</div>';
+      });
+    }
+    html += '</div></div>';
+
+    html += '<div style="width:230px;flex-shrink:0;padding:14px 16px 20px 0;">';
+    html += '<div class="zigzag" style="background:var(--paper);color:var(--ink);border-radius:6px 6px 0 0;padding:16px 14px 14px;font-family:var(--font-m);">';
+    html += '<div style="text-align:center;font-weight:700;font-size:13px;border-bottom:1px dashed var(--line);padding-bottom:10px;margin-bottom:10px;">今日點餐單</div>';
+    if (!selDishes.length){
+      html += '<div style="font-size:12px;color:var(--muted);text-align:center;padding:12px 0;">尚未選擇菜色</div>';
+    } else {
+      selDishes.forEach(function(d, i){
+        html += '<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;gap:6px;"><span>' + (i+1) + '. ' + esc(d.name) + '</span></div>';
+      });
+      html += '<div style="border-top:1px dashed var(--line);margin-top:10px;padding-top:8px;font-size:12px;text-align:right;color:#6b6558;">共 ' + selDishes.length + ' 道</div>';
+    }
+    html += '</div>';
+    html += '<div style="padding-top:14px;display:flex;flex-direction:column;gap:8px;">';
+    html += '<button id="copyOrderBtn" style="padding:9px;border-radius:8px;border:none;background:var(--highlight);color:var(--ink);font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center;gap:6px;"><i class="ti ti-copy" aria-hidden="true"></i>複製點餐清單</button>';
+    html += '<button id="copyIngBtn" style="padding:9px;border-radius:8px;border:1px solid var(--paper);background:transparent;color:var(--paper);font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center;gap:6px;"><i class="ti ti-shopping-cart" aria-hidden="true"></i>產生採買清單</button>';
+    html += '</div></div>';
+    html += '</div>';
+    return html;
+  }
+
+  function renderIngredients(){
+    var dishes = selectedDishes();
+    if (!dishes.length){
+      return '<div style="padding:32px 20px;text-align:center;color:var(--muted);">請先到「點餐」頁面選擇菜色</div>';
+    }
+    var counts = {}, order = [];
+    dishes.forEach(function(d){
+      d.ingredients.forEach(function(ing){
+        var k = ing.trim(); if (!k) return;
+        if (!(k in counts)){ counts[k]=0; order.push(k); }
+        counts[k]++;
+      });
+    });
+    var html = '<div style="padding:16px;">';
+    html += '<div style="background:var(--paper);color:var(--ink);border-radius:10px;padding:14px 16px;">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">';
+    html += '<span style="font-weight:800;font-size:14px;">採買清單（' + order.length + ' 項）</span>';
+    html += '<button id="copyIngBtn2" style="padding:7px 12px;border-radius:6px;border:none;background:var(--stamp);color:#fff;font-weight:700;font-size:12.5px;display:flex;align-items:center;gap:5px;"><i class="ti ti-copy" aria-hidden="true"></i>複製</button>';
+    html += '</div>';
+    order.forEach(function(k){
+      html += '<label style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);font-size:13.5px;">' +
+        '<input type="checkbox" style="width:16px;height:16px;accent-color:var(--sage);">' +
+        '<span>' + esc(k) + (counts[k]>1 ? ' <span style="color:var(--muted);font-family:var(--font-m);">×' + counts[k] + '</span>' : '') + '</span></label>';
+    });
+    html += '<p style="font-size:11.5px;color:var(--muted);margin:10px 0 0;">點「複製」後可貼到手機的記事本 App（例如 Android Notes）保存採買清單。</p>';
+    html += '</div></div>';
+    return html;
+  }
+
+  function renderMatch(){
+    var results = matchResults();
+    var html = '<div style="padding:16px;">';
+    html += '<div style="background:var(--paper);color:var(--ink);border-radius:10px;padding:14px 16px;">';
+    html += '<label style="font-size:12px;font-weight:700;color:#6b6558;">你現在有哪些食材？（逗號分隔）</label>';
+    html += '<textarea id="haveInput" placeholder="雞蛋, 番茄, 蔥, 豆腐" style="width:100%;height:60px;margin-top:6px;padding:9px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;resize:vertical;">' + esc(state.haveText) + '</textarea>';
+    html += '<button id="matchBtn" style="margin-top:10px;padding:9px 16px;border-radius:8px;border:none;background:var(--stamp);color:#fff;font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;"><i class="ti ti-search" aria-hidden="true"></i>看看能做什麼</button>';
+    html += '</div>';
+
+    if (state.haveText.trim()){
+      html += '<div style="margin-top:14px;">';
+      if (!results.length){
+        html += '<div style="color:var(--muted);text-align:center;padding:20px;font-size:13px;">沒有符合的餐點，試試輸入更多食材</div>';
+      } else {
+        results.forEach(function(r){
+          var pct = Math.round(r.ratio*100);
+          var full = r.ratio >= 0.999;
+          var checked = !!state.selected[r.dish.id];
+          html += '<div style="background:var(--paper);color:var(--ink);border-radius:10px;padding:12px 14px;margin-bottom:8px;">';
+          html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">';
+          html += '<div>';
+          html += '<div style="font-weight:800;font-size:14px;display:flex;align-items:center;gap:8px;">' + esc(r.dish.name) +
+            (full ? '<span style="background:var(--sage);color:#fff;font-size:11px;padding:2px 8px;border-radius:12px;">現在就能做</span>' : '') + '</div>';
+          html += '<div style="font-size:11.5px;color:#6b6558;margin-top:2px;">' + r.dish.category + ' · 符合 ' + r.matched + '/' + r.total + ' 項食材（' + pct + '%）</div>';
+          if (r.missing.length) html += '<div style="font-size:12px;color:var(--stamp);margin-top:4px;">還缺：' + r.missing.map(esc).join('、') + '</div>';
+          html += '</div>';
+          html += '<label style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap;flex-shrink:0;"><input type="checkbox" data-toggle="' + r.dish.id + '" ' + (checked?'checked':'') + ' style="width:16px;height:16px;accent-color:var(--stamp);">加入點餐</label>';
+          html += '</div></div>';
+        });
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function bindEvents(){
+    var app = document.getElementById('app');
+    app.querySelectorAll('[data-view]').forEach(function(el){
+      el.addEventListener('click', function(){ setView(el.getAttribute('data-view')); });
+    });
+    app.querySelectorAll('[data-cat]').forEach(function(el){
+      el.addEventListener('click', function(){ state.activeCategory = el.getAttribute('data-cat'); render(); });
+    });
+    app.querySelectorAll('[data-toggle]').forEach(function(el){
+      el.addEventListener('change', function(){ toggleSelect(el.getAttribute('data-toggle')); });
+    });
+    var loadBtn = document.getElementById('loadBtn');
+    if (loadBtn) loadBtn.addEventListener('click', function(){
+      state.sheetId = extractSheetId(document.getElementById('sheetIdInput').value);
+      state.tabs = document.getElementById('tabsInput').value.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s; });
+      fetchAll();
+    });
+    var copyOrderBtn = document.getElementById('copyOrderBtn');
+    if (copyOrderBtn) copyOrderBtn.addEventListener('click', copyOrder);
+    var copyIngBtn = document.getElementById('copyIngBtn');
+    if (copyIngBtn) copyIngBtn.addEventListener('click', copyIngredients);
+    var copyIngBtn2 = document.getElementById('copyIngBtn2');
+    if (copyIngBtn2) copyIngBtn2.addEventListener('click', copyIngredients);
+    var matchBtn = document.getElementById('matchBtn');
+    if (matchBtn) matchBtn.addEventListener('click', function(){
+      state.haveText = document.getElementById('haveInput').value;
+      render();
+    });
+    var haveInput = document.getElementById('haveInput');
+    if (haveInput) haveInput.addEventListener('keydown', function(e){
+      if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); state.haveText = haveInput.value; render(); }
+    });
+  }
+
+  loadConfig();
+})();
+</script>
