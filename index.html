@@ -1,3 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>廚房點餐機</title>
+<style>
+  html,body{margin:0;padding:0;background:#221F1A;}
+  body{display:flex;justify-content:center;}
+</style>
+</head>
+<body>
 <style>
 :root{
   --counter:#221F1A;
@@ -16,8 +28,10 @@
   --font-m:ui-monospace,"SF Mono",Consolas,"Cascadia Mono",monospace;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-.app{background:var(--counter);color:var(--paper);font-family:var(--font-b);border-radius:14px;overflow:hidden;
-  display:flex;flex-direction:column;height:100vh;max-height:900px;font-size:16px;}
+.app{background:var(--counter);color:var(--paper);font-family:var(--font-b);overflow:hidden;
+  display:flex;flex-direction:column;width:100%;max-width:520px;margin:0 auto;
+  height:100vh;height:100dvh;font-size:16px;}
+@media (min-width:521px){.app{max-height:900px;border-radius:14px;margin-top:12px;}}
 .app button{font-family:var(--font-b);cursor:pointer;-webkit-appearance:none;appearance:none;}
 .app input,.app textarea{font-family:var(--font-b);font-size:16px;}
 .scrollarea{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;}
@@ -547,3 +561,6 @@
   loadConfig();
 })();
 </script>
+
+</body>
+</html>
