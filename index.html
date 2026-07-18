@@ -515,7 +515,7 @@
     var html = '<div style="padding:12px 0 0;">';
     html += '<div style="display:flex;gap:7px;overflow-x:auto;padding:0 14px 12px;">';
     var specialActive = isSpecialView;
-    html += '<button data-cat="__special__" class="pill" style="white-space:nowrap;padding:9px 16px;border-radius:20px;border:1px solid ' + (specialActive?'var(--stamp)':'#5a3a30') + ';background:' + (specialActive?'var(--stamp)':'transparent') + ';color:' + (specialActive?'#fff':'#e0a89a') + ';font-weight:800;font-size:14px;display:inline-flex;align-items:center;gap:4px;"><i class="ti ti-star-filled" aria-hidden="true" style="font-size:13px;"></i>特別推薦</button>';
+    html += '<button data-cat="__special__" class="pill" style="white-space:nowrap;padding:9px 16px;border-radius:20px;border:1px solid ' + (specialActive?'var(--stamp)':'#5a3a30') + ';background:' + (specialActive?'var(--stamp)':'transparent') + ';color:' + (specialActive?'#fff':'#e0a89a') + ';font-weight:800;font-size:14px;display:inline-flex;align-items:center;gap:4px;">★特別推薦</button>';
     html += names.map(function(t){
       var active = t === state.activeCategory;
       return '<button data-cat="' + esc(t) + '" class="pill" style="white-space:nowrap;padding:9px 16px;border-radius:20px;border:1px solid ' + (active?'var(--highlight)':'#4a4436') + ';background:' + (active?'var(--highlight)':'transparent') + ';color:' + (active?'var(--ink)':'var(--paper)') + ';font-weight:700;font-size:14px;">' + esc(t) + '</button>';
@@ -531,8 +531,7 @@
           '<input type="checkbox" data-toggle="' + d.id + '" ' + (checked?'checked':'') + ' style="margin-top:3px;width:22px;height:22px;accent-color:var(--stamp);flex-shrink:0;">' +
           '<div style="flex:1;min-width:0;">' +
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
-              (d.special ? '<i class="ti ti-star-filled" aria-hidden="true" style="color:var(--highlight);font-size:15px;"></i>' : '') +
-              '<span style="font-weight:800;font-size:16px;">' + esc(d.name) + '</span>' +
+              '<span style="font-weight:800;font-size:16px;">' + esc(d.name) + (d.special ? ' <span style="color:var(--stamp);">★</span>' : '') + '</span>' +
               (isSpecialView ? '<span style="font-size:11px;color:var(--sage);font-weight:700;">' + esc(d.category) + '</span>' : '') +
               (d.time ? '<span style="font-size:11.5px;color:var(--sage);border:1px solid var(--sage);border-radius:10px;padding:1px 8px;display:inline-flex;align-items:center;gap:3px;"><i class="ti ti-clock" aria-hidden="true"></i>' + esc(d.time) + '</span>' : '') +
               (d.link ? '<a href="' + esc(d.link) + '" target="_blank" rel="noopener" style="color:var(--stamp);font-size:12.5px;display:inline-flex;align-items:center;gap:3px;text-decoration:none;font-weight:700;"><i class="ti ti-external-link" aria-hidden="true"></i>食譜</a>' : '') +
