@@ -58,7 +58,6 @@
     selected: {},
     view: 'order',
     todayMenu: [],
-    todayExcluded: '',
     haveText: '',
     loading: false,
     error: '',
@@ -107,6 +106,11 @@
       return {name: name, gid: gid};
     });
   }
+
+  var STAR_RE = /[★☆✩✪✫✬✭✮✯✰⭐\*＊]/;
+
+  function isSpecial(name){ return STAR_RE.test(name); }
+  function cleanName(name){ return String(name||'').replace(new RegExp(STAR_RE.source,'g'),'').trim(); }
 
   function tabNames(){ return state.tabs.map(function(t){ return t.name; }); }
 
@@ -193,13 +197,16 @@
         var dishes = [];
         for (var r=1;r<rows.length;r++){
           var row = rows[r];
-          var name = (row[idxName]||'').trim();
+          var rawName = (row[idxName]||'').trim();
+          if (!rawName) continue;
+          var name = cleanName(rawName);
           if (!name) continue;
           var ingRaw = row[idxIng]||'';
           dishes.push({
             id: tab.name + '::' + r,
             category: tab.name,
             name: name,
+            special: isSpecial(rawName),
             ingredientsRaw: ingRaw,
             ingredients: splitIngredients(ingRaw),
             steps: (row[idxStep]||'').trim(),
@@ -338,33 +345,42 @@
     return a;
   }
 
-  // 飯 and 麵 are both "staple carbs" — a sensible meal never has both.
-  // Excluding one of them at random from the pool guarantees no conflict,
-  // no matter which other dishes get picked.
-  function buildTodayPool(excludeCat){
-    return allDishes().filter(function(d){ return d.category !== excludeCat; });
+  // 飯 and 麵 are both "staple carbs" — a sensible meal has at most ONE
+  // staple dish total (never two rice dishes, never rice + noodles).
+  function isStaple(d){ return d.category === '飯' || d.category === '麵'; }
+
+  function pickTodayMenu(count, excludeIds){
+    excludeIds = excludeIds || [];
+    var pool = shuffle(allDishes()).filter(function(d){ return excludeIds.indexOf(d.id) === -1; });
+    var result = [];
+    var stapleUsed = false;
+    for (var i=0;i<pool.length && result.length<count;i++){
+      var d = pool[i];
+      if (isStaple(d) && stapleUsed) continue;
+      result.push(d);
+      if (isStaple(d)) stapleUsed = true;
+    }
+    return result;
   }
 
   function generateTodayMenu(){
-    var dishes = allDishes();
-    if (!dishes.length){ state.todayMenu = []; render(); return; }
-    var hasMian = dishes.some(function(d){ return d.category==='麵'; });
-    var hasFan = dishes.some(function(d){ return d.category==='飯'; });
-    var excludeCat = '';
-    if (hasMian && hasFan) excludeCat = Math.random()<0.5 ? '麵' : '飯';
-    var pool = shuffle(buildTodayPool(excludeCat));
+    if (!allDishes().length){ state.todayMenu = []; render(); return; }
     var count = Math.random()<0.5 ? 3 : 4;
-    count = Math.min(count, pool.length);
-    state.todayMenu = pool.slice(0, count);
-    state.todayExcluded = excludeCat;
+    state.todayMenu = pickTodayMenu(count);
     render();
   }
 
   function rerollDish(index){
-    var currentIds = state.todayMenu.map(function(d){ return d.id; });
-    var pool = buildTodayPool(state.todayExcluded).filter(function(d){ return currentIds.indexOf(d.id) === -1; });
+    var others = state.todayMenu.filter(function(d,i){ return i !== index; });
+    var stapleUsed = others.some(isStaple);
+    var excludeIds = others.map(function(d){ return d.id; }).concat([state.todayMenu[index].id]);
+    var pool = shuffle(allDishes()).filter(function(d){
+      if (excludeIds.indexOf(d.id) > -1) return false;
+      if (isStaple(d) && stapleUsed) return false;
+      return true;
+    });
     if (!pool.length) return;
-    state.todayMenu[index] = pool[Math.floor(Math.random()*pool.length)];
+    state.todayMenu[index] = pool[0];
     render();
   }
 
@@ -493,10 +509,13 @@
 
   function renderOrder(){
     var names = tabNames();
-    var dishes = state.data[state.activeCategory] || [];
+    var isSpecialView = state.activeCategory === '__special__';
+    var dishes = isSpecialView ? allDishes().filter(function(d){ return d.special; }) : (state.data[state.activeCategory] || []);
     var selCount = Object.keys(state.selected).length;
     var html = '<div style="padding:12px 0 0;">';
     html += '<div style="display:flex;gap:7px;overflow-x:auto;padding:0 14px 12px;">';
+    var specialActive = isSpecialView;
+    html += '<button data-cat="__special__" class="pill" style="white-space:nowrap;padding:9px 16px;border-radius:20px;border:1px solid ' + (specialActive?'var(--stamp)':'#5a3a30') + ';background:' + (specialActive?'var(--stamp)':'transparent') + ';color:' + (specialActive?'#fff':'#e0a89a') + ';font-weight:800;font-size:14px;display:inline-flex;align-items:center;gap:4px;"><i class="ti ti-star-filled" aria-hidden="true" style="font-size:13px;"></i>特別推薦</button>';
     html += names.map(function(t){
       var active = t === state.activeCategory;
       return '<button data-cat="' + esc(t) + '" class="pill" style="white-space:nowrap;padding:9px 16px;border-radius:20px;border:1px solid ' + (active?'var(--highlight)':'#4a4436') + ';background:' + (active?'var(--highlight)':'transparent') + ';color:' + (active?'var(--ink)':'var(--paper)') + ';font-weight:700;font-size:14px;">' + esc(t) + '</button>';
@@ -504,7 +523,7 @@
     html += '</div>';
     html += '<div style="background:var(--paper);color:var(--ink);border-radius:14px 14px 0 0;margin:0 10px;overflow:hidden;padding-bottom:2px;">';
     if (!dishes.length){
-      html += '<div style="padding:28px;text-align:center;color:var(--muted);font-size:14px;">這個分頁目前沒有菜色資料</div>';
+      html += '<div style="padding:28px;text-align:center;color:var(--muted);font-size:14px;">' + (isSpecialView ? '目前沒有加星號的特別推薦料理' : '這個分頁目前沒有菜色資料') + '</div>';
     } else {
       dishes.forEach(function(d){
         var checked = !!state.selected[d.id];
@@ -512,7 +531,9 @@
           '<input type="checkbox" data-toggle="' + d.id + '" ' + (checked?'checked':'') + ' style="margin-top:3px;width:22px;height:22px;accent-color:var(--stamp);flex-shrink:0;">' +
           '<div style="flex:1;min-width:0;">' +
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+              (d.special ? '<i class="ti ti-star-filled" aria-hidden="true" style="color:var(--highlight);font-size:15px;"></i>' : '') +
               '<span style="font-weight:800;font-size:16px;">' + esc(d.name) + '</span>' +
+              (isSpecialView ? '<span style="font-size:11px;color:var(--sage);font-weight:700;">' + esc(d.category) + '</span>' : '') +
               (d.time ? '<span style="font-size:11.5px;color:var(--sage);border:1px solid var(--sage);border-radius:10px;padding:1px 8px;display:inline-flex;align-items:center;gap:3px;"><i class="ti ti-clock" aria-hidden="true"></i>' + esc(d.time) + '</span>' : '') +
               (d.link ? '<a href="' + esc(d.link) + '" target="_blank" rel="noopener" style="color:var(--stamp);font-size:12.5px;display:inline-flex;align-items:center;gap:3px;text-decoration:none;font-weight:700;"><i class="ti ti-external-link" aria-hidden="true"></i>食譜</a>' : '') +
             '</div>' +
