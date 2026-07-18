@@ -48,7 +48,7 @@
 <script>
 (function(){
   var DEFAULT_SHEET_ID = '1ERgPXq-uEtwkKIUDvIXrK5Ec9ck1pDyyYCKXiAs4se8';
-  var DEFAULT_TABS = ['飯','麵','豬肉料理','雞肉料理','蔬菜','湯','其他'].map(function(n){ return {name:n, gid:''}; });
+  var DEFAULT_TABS = ['飯','麵','豬肉料理','雞肉料理','蛋豆海鮮','蔬菜菌菇','湯'].map(function(n){ return {name:n, gid:''}; });
 
   var state = {
     sheetId: DEFAULT_SHEET_ID,
@@ -57,6 +57,8 @@
     activeCategory: null,
     selected: {},
     view: 'order',
+    todayMenu: [],
+    todayExcluded: '',
     haveText: '',
     loading: false,
     error: '',
@@ -219,7 +221,11 @@
     state.error = failedTabs.length ? ('以下分頁讀取失敗，請確認名稱與共用權限：' + failedTabs.join('、')) : '';
     state.warning = dupTabs.length ? ('分頁「' + dupTabs.join('、') + '」抓到的內容跟其他分頁重複，請重新整理再試一次；若持續發生，可在分頁名稱後面加上 :GID 指定分頁（設定頁有說明）。') : '';
     await saveConfig();
-    render();
+    if (state.view === 'today' && !state.todayMenu.length && allDishes().length){
+      generateTodayMenu();
+    } else {
+      render();
+    }
   }
 
   function toggleSelect(id){
@@ -323,7 +329,58 @@
     return results.filter(function(r){ return r.matched>0; }).sort(function(a,b){ return b.ratio-a.ratio || b.matched-a.matched; });
   }
 
-  function setView(v){ state.view = v; render(); }
+  function shuffle(arr){
+    var a = arr.slice();
+    for (var i=a.length-1;i>0;i--){
+      var j = Math.floor(Math.random()*(i+1));
+      var tmp = a[i]; a[i]=a[j]; a[j]=tmp;
+    }
+    return a;
+  }
+
+  // 飯 and 麵 are both "staple carbs" — a sensible meal never has both.
+  // Excluding one of them at random from the pool guarantees no conflict,
+  // no matter which other dishes get picked.
+  function buildTodayPool(excludeCat){
+    return allDishes().filter(function(d){ return d.category !== excludeCat; });
+  }
+
+  function generateTodayMenu(){
+    var dishes = allDishes();
+    if (!dishes.length){ state.todayMenu = []; render(); return; }
+    var hasMian = dishes.some(function(d){ return d.category==='麵'; });
+    var hasFan = dishes.some(function(d){ return d.category==='飯'; });
+    var excludeCat = '';
+    if (hasMian && hasFan) excludeCat = Math.random()<0.5 ? '麵' : '飯';
+    var pool = shuffle(buildTodayPool(excludeCat));
+    var count = Math.random()<0.5 ? 3 : 4;
+    count = Math.min(count, pool.length);
+    state.todayMenu = pool.slice(0, count);
+    state.todayExcluded = excludeCat;
+    render();
+  }
+
+  function rerollDish(index){
+    var currentIds = state.todayMenu.map(function(d){ return d.id; });
+    var pool = buildTodayPool(state.todayExcluded).filter(function(d){ return currentIds.indexOf(d.id) === -1; });
+    if (!pool.length) return;
+    state.todayMenu[index] = pool[Math.floor(Math.random()*pool.length)];
+    render();
+  }
+
+  function addTodayMenuToOrder(){
+    state.todayMenu.forEach(function(d){ state.selected[d.id] = true; });
+    setView('order');
+  }
+
+  function setView(v){
+    state.view = v;
+    if (v === 'today' && !state.todayMenu.length && Object.keys(state.data).length){
+      generateTodayMenu();
+    } else {
+      render();
+    }
+  }
 
   function render(){
     var app = document.getElementById('app');
@@ -342,6 +399,7 @@
 
   function renderBottomNav(){
     var tabs = [
+      {id:'today', label:'今日菜單', icon:'ti-dice-5'},
       {id:'order', label:'點餐', icon:'ti-clipboard-list'},
       {id:'ingredients', label:'採買清單', icon:'ti-shopping-cart'},
       {id:'match', label:'食材比對', icon:'ti-search'},
@@ -369,10 +427,43 @@
         '<p style="color:var(--muted);font-size:13px;margin:0 0 16px;">請先到「設定」輸入試算表資訊</p>' +
       '</div>';
     }
+    if (state.view === 'today') return renderToday();
     if (state.view === 'order') return renderOrder();
     if (state.view === 'ingredients') return renderIngredients();
     if (state.view === 'match') return renderMatch();
     return '';
+  }
+
+  function renderToday(){
+    var menu = state.todayMenu;
+    var html = '<div style="padding:14px;">';
+    html += '<div style="background:var(--paper);color:var(--ink);border-radius:14px;padding:16px;margin-bottom:12px;">';
+    html += '<div style="font-weight:800;font-size:16px;display:flex;align-items:center;gap:7px;"><i class="ti ti-dice-5" aria-hidden="true" style="color:var(--stamp);"></i>今日菜單</div>';
+    html += '<p style="font-size:12.5px;color:#6b6558;margin:6px 0 12px;line-height:1.6;">自動抽選 ' + (menu.length||3) + ' 道菜，飯跟麵不會同時出現。不滿意可以針對單一道菜重抽。</p>';
+    html += '<button id="regenBtn" style="width:100%;padding:12px;border-radius:10px;border:none;background:var(--stamp);color:#fff;font-weight:700;font-size:14.5px;display:flex;align-items:center;justify-content:center;gap:6px;"><i class="ti ti-refresh" aria-hidden="true"></i>整份重新抽</button>';
+    html += '</div>';
+
+    if (!menu.length){
+      html += '<div style="text-align:center;color:var(--muted);font-size:13.5px;padding:20px;">目前沒有可抽選的菜色</div>';
+    } else {
+      menu.forEach(function(d, idx){
+        html += '<div style="background:var(--paper);color:var(--ink);border-radius:12px;padding:14px;margin-bottom:9px;">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">';
+        html += '<div style="min-width:0;">';
+        html += '<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">';
+        html += '<span style="font-size:11px;color:var(--sage);font-weight:700;">' + esc(d.category) + '</span>';
+        html += '</div>';
+        html += '<div style="font-weight:800;font-size:16px;margin-top:2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' + esc(d.name) +
+          (d.time ? '<span style="font-size:11.5px;color:var(--sage);border:1px solid var(--sage);border-radius:10px;padding:1px 8px;display:inline-flex;align-items:center;gap:3px;font-weight:500;"><i class="ti ti-clock" aria-hidden="true"></i>' + esc(d.time) + '</span>' : '') + '</div>';
+        html += '<div style="font-size:12.5px;color:#6b6558;margin-top:4px;">' + esc(d.ingredients.join('、') || '（未填寫食材）') + '</div>';
+        html += '</div>';
+        html += '<button data-reroll="' + idx + '" style="flex-shrink:0;width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:#fff;color:var(--stamp);display:flex;align-items:center;justify-content:center;"><i class="ti ti-refresh" aria-hidden="true" style="font-size:18px;"></i></button>';
+        html += '</div></div>';
+      });
+      html += '<button id="addTodayBtn" style="width:100%;padding:13px;border-radius:12px;border:none;background:var(--highlight);color:var(--ink);font-weight:800;font-size:15px;display:flex;align-items:center;justify-content:center;gap:8px;margin-top:6px;"><i class="ti ti-clipboard-check" aria-hidden="true"></i>加入點餐清單</button>';
+    }
+    html += '</div>';
+    return html;
   }
 
   function renderSettings(){
@@ -555,6 +646,13 @@
     if (matchBtn) matchBtn.addEventListener('click', function(){
       state.haveText = document.getElementById('haveInput').value;
       render();
+    });
+    var regenBtn = document.getElementById('regenBtn');
+    if (regenBtn) regenBtn.addEventListener('click', generateTodayMenu);
+    var addTodayBtn = document.getElementById('addTodayBtn');
+    if (addTodayBtn) addTodayBtn.addEventListener('click', addTodayMenuToOrder);
+    app.querySelectorAll('[data-reroll]').forEach(function(el){
+      el.addEventListener('click', function(){ rerollDish(parseInt(el.getAttribute('data-reroll'), 10)); });
     });
   }
 
